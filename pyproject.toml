@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thaghr"
+version = "0.0.1"
+description = "Chaos engineering and reliability measurement for AI agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [{name = "Taoheed A. Abdulraheem"}]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://thaghr.dev"
+Repository = "https://github.com/thaghr/thaghr"
+
+[tool.setuptools.packages.find]
+where = ["src"]
