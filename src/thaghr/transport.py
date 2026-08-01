@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import httpx
 
-from thaghr.faults.http_error import HTTPErrorFault
+from thaghr.cassette import Cassette
+from thaghr.faults.base import Fault
+
+Mode = Literal["live", "record", "replay"]
 
 
 class ThaghrTransport(httpx.BaseTransport):
@@ -14,19 +19,34 @@ class ThaghrTransport(httpx.BaseTransport):
     adapter is required; this is the provider-level interception locked
     in during naming/claiming.
 
-    The first fault in `faults` whose `apply()` returns a FaultResponse
+    The first fault in `faults` whose `apply()` returns a non-None result
     short-circuits the request: `wrapped` is never called and no real
-    network traffic occurs. If no fault fires, the request is forwarded
-    to `wrapped` unchanged.
+    network traffic occurs. If no fault fires, the request is handled
+    according to `mode`:
+
+      - "live" (default): forwarded to `wrapped` unchanged, nothing recorded.
+      - "record": forwarded to `wrapped`, and the request/response pair is
+        saved to `cassette`.
+      - "replay": never touches `wrapped`; the response comes from
+        `cassette` instead. This is what makes a mixed real+fault campaign
+        byte-identical across re-runs under the same seed: faults replay
+        deterministically via each Fault's own RNG, and the non-faulted
+        calls replay deterministically via the cassette.
     """
 
     def __init__(
         self,
-        faults: list[HTTPErrorFault],
+        faults: list[Fault],
         wrapped: httpx.BaseTransport | None = None,
+        cassette: Cassette | None = None,
+        mode: Mode = "live",
     ) -> None:
+        if mode in ("record", "replay") and cassette is None:
+            raise ValueError(f"mode={mode!r} requires a cassette")
         self.faults = faults
         self.wrapped = wrapped or httpx.HTTPTransport()
+        self.cassette = cassette
+        self.mode = mode
         self.request_log: list[dict] = []
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
@@ -47,13 +67,25 @@ class ThaghrTransport(httpx.BaseTransport):
                     request=request,
                     headers={"retry-after": "0"},
                 )
+
+        if self.mode == "replay":
+            response = self.cassette.replay(request)
+        else:
+            response = self.wrapped.handle_request(request)
+            if self.mode == "record":
+                self.cassette.record(request, response)
+
         self.request_log.append(
             {"method": request.method, "url": str(request.url), "injected_status": None}
         )
-        return self.wrapped.handle_request(request)
+        return response
 
     def reset(self) -> None:
-        """Reset every fault's RNG and clear the request log, for re-running a campaign."""
+        """Reset every fault's RNG, clear the request log, and rewind the
+        cassette (if any) to its start, for re-running a campaign from
+        the beginning."""
         for fault in self.faults:
             fault.reset()
         self.request_log = []
+        if self.cassette is not None:
+            self.cassette.reset_replay_position()

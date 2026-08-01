@@ -4,6 +4,7 @@ import httpx
 import openai
 import pytest
 
+from thaghr.cassette import Cassette
 from thaghr.faults.http_error import HTTPErrorFault
 from thaghr.transport import ThaghrTransport
 
@@ -142,3 +143,77 @@ class TestDeterminism:
         second_run = transport.request_log
 
         assert first_run == second_run
+
+
+class TestMixedRealAndFaultDeterminism:
+    """This is the actual Phase 2 DoD: a campaign with both faulted and real
+    calls replays byte-identically under the same seed. TestDeterminism above
+    only proves this for rate=1.0 runs where the real backend is never hit,
+    which is a narrower claim."""
+
+    @staticmethod
+    def _fake_backend(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"echo_len": len(request.content)}, request=request)
+
+    def test_record_then_replay_reproduces_identical_request_log(self, tmp_path):
+        cassette_path = tmp_path / "campaign.json"
+        bodies = [f'{{"call": {i}}}'.encode() for i in range(10)]
+
+        record_cassette = Cassette(cassette_path)
+        record_transport = ThaghrTransport(
+            faults=[HTTPErrorFault(rate=0.5, seed=42, status_code=429)],
+            wrapped=httpx.MockTransport(self._fake_backend),
+            cassette=record_cassette,
+            mode="record",
+        )
+        record_client = httpx.Client(transport=record_transport)
+        for body in bodies:
+            record_client.post("https://api.example.com/v1/chat", content=body)
+        record_cassette.save()
+        record_log = record_transport.request_log
+
+        # sanity check the scenario actually exercises both paths
+        injected = [r["injected_status"] for r in record_log]
+        assert 429 in injected, "fault never fired, test doesn't exercise the mixed case"
+        assert None in injected, "fault always fired, test doesn't exercise the real-call path"
+
+        replay_cassette = Cassette(cassette_path)
+        replay_transport = ThaghrTransport(
+            faults=[HTTPErrorFault(rate=0.5, seed=42, status_code=429)],
+            wrapped=httpx.MockTransport(_unreachable_transport),
+            cassette=replay_cassette,
+            mode="replay",
+        )
+        replay_client = httpx.Client(transport=replay_transport)
+        for body in bodies:
+            replay_client.post("https://api.example.com/v1/chat", content=body)
+
+        assert replay_transport.request_log == record_log
+
+    def test_reset_rewinds_fault_and_cassette_together_on_one_transport(self, tmp_path):
+        cassette_path = tmp_path / "campaign.json"
+        bodies = [f'{{"call": {i}}}'.encode() for i in range(6)]
+
+        cassette = Cassette(cassette_path)
+        transport = ThaghrTransport(
+            faults=[HTTPErrorFault(rate=0.5, seed=7, status_code=429)],
+            wrapped=httpx.MockTransport(self._fake_backend),
+            cassette=cassette,
+            mode="record",
+        )
+        client = httpx.Client(transport=transport)
+        for body in bodies:
+            client.post("https://api.example.com/v1/chat", content=body)
+        first_run_log = transport.request_log
+
+        transport.reset()
+        transport.mode = "replay"
+        transport.wrapped = httpx.MockTransport(_unreachable_transport)
+        for body in bodies:
+            client.post("https://api.example.com/v1/chat", content=body)
+
+        assert transport.request_log == first_run_log
+
+    def test_replay_mode_without_cassette_raises(self):
+        with pytest.raises(ValueError):
+            ThaghrTransport(faults=[], mode="replay")
