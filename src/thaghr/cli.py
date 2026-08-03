@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"thaghr: campaign stopped, {exc}", file=sys.stderr)
         return 1
 
-    successes = sum(1 for r in results if r.status == "success")
+    successes = sum(1 for r in results if r.pass_1())
     print(f"thaghr: {len(results)} trials complete ({successes} succeeded), wrote {args.output}")
     return 0
 

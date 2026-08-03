@@ -7,6 +7,7 @@ import pytest
 
 from thaghr.faults.http_error import HTTPErrorFault
 from thaghr.runner import CostBudgetExceeded, run_campaign
+from thaghr.schema import SubtaskOutcome
 
 
 def _stub_agent_success(client: httpx.Client) -> dict:
@@ -35,6 +36,13 @@ class TestRunCampaign:
             rows = list(csv.DictReader(f))
         assert len(rows) == 50
         assert all(r["status"] == "success" for r in rows)
+        assert all(r["pass_1"] == "True" for r in rows)
+        assert all(r["gds"] == "1.0" for r in rows)
+        # subtask_results is populated even on the single-check fallback,
+        # this is the whole point of the Phase 3 EpisodeResult swap.
+        assert all(r.subtask_results == {"pass": SubtaskOutcome(passed=True, weight=1.0)} for r in results)
+        assert all(r.fault_fired is False for r in results)
+        assert all(r["fault_fired"] == "False" for r in rows)
 
     def test_trial_numbers_are_sequential(self, tmp_path):
         output = tmp_path / "results.csv"
@@ -52,6 +60,8 @@ class TestRunCampaign:
         assert len(results) == 5
         assert all(r.status == "error" for r in results)
         assert all(r.error_type == "RuntimeError" for r in results)
+        assert all(r.pass_1() is False for r in results)
+        assert all(r.gds() == 0.0 for r in results)
 
     def test_refuses_to_exceed_max_cost(self, tmp_path):
         output = tmp_path / "results.csv"
@@ -114,3 +124,17 @@ class TestRunCampaign:
         assert len(results) == 5
         assert all(r.status == "error" for r in results)
         assert all(r.error_type == "HTTPStatusError" for r in results)
+        # fault_fired must be True here, this is what fault_tolerance()
+        # in metrics.py keys off of.
+        assert all(r.fault_fired is True for r in results)
+
+    def test_fault_fired_false_when_fault_never_hits(self, tmp_path):
+        output = tmp_path / "results.csv"
+        results = run_campaign(
+            agent_fn=_stub_agent_success,
+            trials=5,
+            faults=[HTTPErrorFault(rate=0.0, seed=1, status_code=429)],
+            max_cost=100.0,
+            output_path=output,
+        )
+        assert all(r.fault_fired is False for r in results)

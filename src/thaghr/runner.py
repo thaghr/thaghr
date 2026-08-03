@@ -13,14 +13,15 @@ trials have already spent the budget.
 from __future__ import annotations
 
 import csv
+import json
 import time
-from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
 import httpx
 
 from thaghr.faults.http_error import HTTPErrorFault
+from thaghr.schema import EpisodeResult
 from thaghr.transport import ThaghrTransport
 
 # Rough per-1k-token pricing, gpt-4o-mini as of this writing. Used only
@@ -31,17 +32,6 @@ PRICE_PER_1K_COMPLETION = 0.0006
 
 class CostBudgetExceeded(Exception):
     """Raised when starting the next trial would exceed --max-cost."""
-
-
-@dataclass
-class TrialResult:
-    trial: int
-    status: str  # "success" | "error"
-    error_type: str | None
-    latency_seconds: float
-    prompt_tokens: int
-    completion_tokens: int
-    cost_usd: float
 
 
 def _estimate_cost(prompt_tokens: int, completion_tokens: int) -> float:
@@ -57,8 +47,15 @@ def run_campaign(
     faults: list[HTTPErrorFault],
     max_cost: float,
     output_path: Path,
-) -> list[TrialResult]:
-    results: list[TrialResult] = []
+) -> list[EpisodeResult]:
+    """Runs `trials` episodes against `agent_fn`. Every episode is recorded
+    as an EpisodeResult using the single_check() fallback: one subtask
+    named "pass", full weight, driven by whether the trial raised. Real
+    subtask decomposition is a Phase 3-5 UX decision (see thaghr skill),
+    not built here; examples/01-hello-agent stays on single_check() since
+    decomposing a one-call hello-world agent would be overengineering for
+    what it's meant to demonstrate."""
+    results: list[EpisodeResult] = []
     total_cost = 0.0
 
     for i in range(trials):
@@ -80,7 +77,7 @@ def run_campaign(
             cost = _estimate_cost(prompt_tokens, completion_tokens)
             total_cost += cost
             results.append(
-                TrialResult(
+                EpisodeResult.from_single_check(
                     trial=i,
                     status="success",
                     error_type=None,
@@ -88,12 +85,14 @@ def run_campaign(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     cost_usd=cost,
+                    passed=True,
+                    fault_fired=_any_fault_fired(transport),
                 )
             )
         except Exception as exc:
             elapsed = time.monotonic() - start
             results.append(
-                TrialResult(
+                EpisodeResult.from_single_check(
                     trial=i,
                     status="error",
                     error_type=type(exc).__name__,
@@ -101,6 +100,8 @@ def run_campaign(
                     prompt_tokens=0,
                     completion_tokens=0,
                     cost_usd=0.0,
+                    passed=False,
+                    fault_fired=_any_fault_fired(transport),
                 )
             )
         finally:
@@ -110,7 +111,14 @@ def run_campaign(
     return results
 
 
-def _write_csv(results: list[TrialResult], output_path: Path) -> None:
+def _any_fault_fired(transport: ThaghrTransport) -> bool:
+    """True if any request in this trial had a fault injected. Backs
+    fault_tolerance() in metrics.py, which needs to know which trials
+    actually encountered a fault versus which ones didn't."""
+    return any(entry["injected_status"] is not None for entry in transport.request_log)
+
+
+def _write_csv(results: list[EpisodeResult], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "trial",
@@ -120,9 +128,32 @@ def _write_csv(results: list[TrialResult], output_path: Path) -> None:
         "prompt_tokens",
         "completion_tokens",
         "cost_usd",
+        "gds",
+        "pass_1",
+        "subtask_results",
+        "fault_fired",
     ]
     with output_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in results:
-            writer.writerow(asdict(r))
+            writer.writerow(
+                {
+                    "trial": r.trial,
+                    "status": r.status,
+                    "error_type": r.error_type,
+                    "latency_seconds": r.latency_seconds,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
+                    "cost_usd": r.cost_usd,
+                    "gds": r.gds(),
+                    "pass_1": r.pass_1(),
+                    "subtask_results": json.dumps(
+                        {
+                            name: {"passed": o.passed, "weight": o.weight}
+                            for name, o in r.subtask_results.items()
+                        }
+                    ),
+                    "fault_fired": r.fault_fired,
+                }
+            )
