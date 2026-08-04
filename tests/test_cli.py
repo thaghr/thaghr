@@ -46,6 +46,117 @@ class TestCLIAgainstStub:
         )
         assert exit_code == 1
 
+    def test_run_prints_report_card(self, stub_example, tmp_path, capsys):
+        output = tmp_path / "out.csv"
+        exit_code = main(
+            ["run", str(stub_example), "--trials", "10", "--output", str(output), "--max-cost", "10"]
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "thaghr report card" in captured.out
+        assert "pass^1: 100%" in captured.out
+
+    def test_run_respects_k_flag(self, stub_example, tmp_path, capsys):
+        output = tmp_path / "out.csv"
+        exit_code = main(
+            [
+                "run",
+                str(stub_example),
+                "--trials",
+                "10",
+                "--k",
+                "3",
+                "--output",
+                str(output),
+                "--max-cost",
+                "10",
+            ]
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "pass^3:" in captured.out
+
+    def test_run_pretty_flag_uses_rich(self, stub_example, tmp_path, capsys):
+        output = tmp_path / "out.csv"
+        exit_code = main(
+            [
+                "run",
+                str(stub_example),
+                "--trials",
+                "10",
+                "--pretty",
+                "--output",
+                str(output),
+                "--max-cost",
+                "10",
+            ]
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "thaghr report card" in captured.out
+        # rich's box-drawing differs from the plain renderer's; this just
+        # confirms the pretty path actually ran instead of the plain one.
+        assert "╭" in captured.out or "─" in captured.out
+
+
+class TestCLICompare:
+    def test_compare_writes_two_csvs_and_prints_report_card(self, stub_example, tmp_path, capsys):
+        output_dir = tmp_path / "results"
+        exit_code = main(
+            [
+                "compare",
+                str(stub_example),
+                "--baseline-trials",
+                "20",
+                "--fault-trials",
+                "20",
+                "--fault-rate",
+                "0.3",
+                "--seed",
+                "1",
+                "--max-cost",
+                "10",
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+        assert exit_code == 0
+        assert (output_dir / "baseline.csv").exists()
+        assert (output_dir / "faulted.csv").exists()
+        captured = capsys.readouterr()
+        assert "thaghr compare report card" in captured.out
+        assert "baseline" in captured.out
+        assert "faulted" in captured.out
+        assert "robustness" in captured.out
+        assert "survival" in captured.out
+
+    def test_compare_baseline_is_actually_unfaulted(self, stub_example, tmp_path):
+        # The stub agent always succeeds regardless of faults (it never
+        # touches the injected httpx client), so this proves the baseline
+        # campaign really does run with faults=[]: 100% either way here,
+        # but robustness should come back defined and equal to 1.0 since
+        # both conditions behave identically for this particular stub.
+        import csv
+
+        output_dir = tmp_path / "results"
+        main(
+            [
+                "compare",
+                str(stub_example),
+                "--baseline-trials",
+                "10",
+                "--fault-trials",
+                "10",
+                "--max-cost",
+                "10",
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+        with (output_dir / "baseline.csv").open() as f:
+            baseline_rows = list(csv.DictReader(f))
+        assert all(row["fault_fired"] == "False" for row in baseline_rows)
+
 
 class TestCLIAgainstRealExample:
     def test_hello_agent_completes_50_trials_fully_faulted(self, tmp_path):

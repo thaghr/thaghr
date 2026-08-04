@@ -7,6 +7,12 @@ import sys
 from pathlib import Path
 
 from thaghr.faults.http_error import HTTPErrorFault
+from thaghr.report import (
+    render_compare_report_card,
+    render_compare_report_card_rich,
+    render_report_card,
+    render_report_card_rich,
+)
 from thaghr.runner import CostBudgetExceeded, run_campaign
 
 
@@ -41,6 +47,38 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--seed", type=int, default=0)
     run_parser.add_argument("--output", type=Path, default=Path("thaghr-results.csv"))
+    run_parser.add_argument(
+        "--k", type=int, default=1, help="k for the pass^k headline metric on the report card"
+    )
+    run_parser.add_argument(
+        "--pretty", action="store_true", help="colorized report card via rich (pip install thaghr[pretty])"
+    )
+
+    compare_parser = subparsers.add_parser(
+        "compare", help="run a baseline and a faulted campaign, report robustness and survival"
+    )
+    compare_parser.add_argument(
+        "example", type=Path, help="path to an examples/ directory containing agent.py"
+    )
+    compare_parser.add_argument("--baseline-trials", type=int, default=10)
+    compare_parser.add_argument("--fault-trials", type=int, default=10)
+    compare_parser.add_argument(
+        "--max-cost", type=float, default=1.0, help="cap applied to each campaign separately, not combined"
+    )
+    compare_parser.add_argument(
+        "--fault-rate",
+        type=float,
+        default=0.2,
+        help="probability an HTTP 429 fires per call in the faulted campaign",
+    )
+    compare_parser.add_argument("--seed", type=int, default=0)
+    compare_parser.add_argument("--output-dir", type=Path, default=Path("."))
+    compare_parser.add_argument(
+        "--k", type=int, default=1, help="k for the pass^k headline metric on the report card"
+    )
+    compare_parser.add_argument(
+        "--pretty", action="store_true", help="colorized report card via rich (pip install thaghr[pretty])"
+    )
     return parser
 
 
@@ -48,10 +86,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if args.command != "run":
-        parser.print_help()
-        return 1
+    if args.command == "run":
+        return _run(args)
+    if args.command == "compare":
+        return _compare(args)
 
+    parser.print_help()
+    return 1
+
+
+def _run(args: argparse.Namespace) -> int:
     agent_fn = _load_agent(args.example)
     faults = (
         [HTTPErrorFault(rate=args.fault_rate, seed=args.seed)] if args.fault_rate > 0 else []
@@ -69,8 +113,42 @@ def main(argv: list[str] | None = None) -> int:
         print(f"thaghr: campaign stopped, {exc}", file=sys.stderr)
         return 1
 
-    successes = sum(1 for r in results if r.pass_1())
-    print(f"thaghr: {len(results)} trials complete ({successes} succeeded), wrote {args.output}")
+    print(f"thaghr: {len(results)} trials complete, wrote {args.output}\n")
+    if args.pretty:
+        render_report_card_rich(results, args.k, example_name=args.example.name)
+    else:
+        print(render_report_card(results, args.k, example_name=args.example.name))
+    return 0
+
+
+def _compare(args: argparse.Namespace) -> int:
+    agent_fn = _load_agent(args.example)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        baseline = run_campaign(
+            agent_fn=agent_fn,
+            trials=args.baseline_trials,
+            faults=[],
+            max_cost=args.max_cost,
+            output_path=args.output_dir / "baseline.csv",
+        )
+        faulted = run_campaign(
+            agent_fn=agent_fn,
+            trials=args.fault_trials,
+            faults=[HTTPErrorFault(rate=args.fault_rate, seed=args.seed)],
+            max_cost=args.max_cost,
+            output_path=args.output_dir / "faulted.csv",
+        )
+    except CostBudgetExceeded as exc:
+        print(f"thaghr: campaign stopped, {exc}", file=sys.stderr)
+        return 1
+
+    print(f"thaghr: wrote {args.output_dir / 'baseline.csv'} and {args.output_dir / 'faulted.csv'}\n")
+    if args.pretty:
+        render_compare_report_card_rich(faulted, baseline, args.k, example_name=args.example.name)
+    else:
+        print(render_compare_report_card(faulted, baseline, args.k, example_name=args.example.name))
     return 0
 
 

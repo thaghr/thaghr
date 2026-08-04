@@ -12,3 +12,4 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+week3_demo.py
