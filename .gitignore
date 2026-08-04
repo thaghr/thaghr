@@ -13,3 +13,4 @@ __pycache__/
 .pytest_cache/
 .venv/
 week3_demo.py
+*.csv
