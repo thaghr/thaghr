@@ -79,6 +79,22 @@ def _build_parser() -> argparse.ArgumentParser:
     compare_parser.add_argument(
         "--pretty", action="store_true", help="colorized report card via rich (pip install thaghr[pretty])"
     )
+
+    proxy_parser = subparsers.add_parser(
+        "proxy", help="run thaghr as an HTTP proxy in front of an OpenAI-compatible endpoint"
+    )
+    proxy_parser.add_argument(
+        "--upstream", required=True, help="upstream OpenAI-compatible base URL, e.g. https://api.openai.com"
+    )
+    proxy_parser.add_argument(
+        "--fault-rate",
+        type=float,
+        default=0.2,
+        help="probability an HTTP 429 fires per call, 0 disables fault injection",
+    )
+    proxy_parser.add_argument("--seed", type=int, default=0)
+    proxy_parser.add_argument("--host", default="127.0.0.1")
+    proxy_parser.add_argument("--port", type=int, default=8135)
     return parser
 
 
@@ -90,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run(args)
     if args.command == "compare":
         return _compare(args)
+    if args.command == "proxy":
+        return _proxy(args)
 
     parser.print_help()
     return 1
@@ -149,6 +167,19 @@ def _compare(args: argparse.Namespace) -> int:
         render_compare_report_card_rich(faulted, baseline, args.k, example_name=args.example.name)
     else:
         print(render_compare_report_card(faulted, baseline, args.k, example_name=args.example.name))
+    return 0
+
+
+def _proxy(args: argparse.Namespace) -> int:
+    from thaghr.proxy import run_proxy
+
+    run_proxy(
+        upstream_base_url=args.upstream,
+        fault_rate=args.fault_rate,
+        seed=args.seed,
+        host=args.host,
+        port=args.port,
+    )
     return 0
 
 

@@ -1,0 +1,14 @@
+{
+  "name": "thaghr-example-06-node-proxy",
+  "version": "0.0.1",
+  "private": true,
+  "description": "thaghr Phase 6 example: OpenAI JS SDK gets faults injected with no client-side change beyond baseURL",
+  "type": "module",
+  "main": "agent.mjs",
+  "scripts": {
+    "start": "node agent.mjs"
+  },
+  "dependencies": {
+    "openai": "^7.5.0"
+  }
+}

@@ -13,4 +13,12 @@ __pycache__/
 .pytest_cache/
 .venv/
 week3_demo.py
-*.csv
+*.csvnode_modules/
+.venv/
+__pycache__/
+*.pyc
+thaghr-results.csv
+baseline.csv
+faulted.csv
+
+node_modules/
