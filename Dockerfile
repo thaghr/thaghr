@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir --prefix=/install .
 FROM python:3.12-slim
 
 COPY --from=builder /install /usr/local
+COPY examples/ /home/thaghr/examples/
 
 # Non-root, standard practice for anything that'll eventually run as a Deployment
 RUN useradd --create-home --uid 1000 thaghr
