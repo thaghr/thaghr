@@ -1,4 +1,5 @@
 from .base import Fault
+from thaghr.telemetry import faults_injected_total
 
 
 class FaultResponse:
@@ -20,5 +21,6 @@ class HTTPErrorFault(Fault):
 
     def apply(self) -> FaultResponse | None:
         if self.should_fire():
+            faults_injected_total.labels(fault_type="http_error").inc()
             return FaultResponse(self.status_code, self.body)
         return None

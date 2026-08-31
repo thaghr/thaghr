@@ -23,6 +23,7 @@ import httpx
 from thaghr.faults.http_error import HTTPErrorFault
 from thaghr.schema import EpisodeResult
 from thaghr.transport import ThaghrTransport
+from thaghr.telemetry import episode_results_total
 
 # Rough per-1k-token pricing, gpt-4o-mini as of this writing. Used only
 # for the --max-cost guardrail, not meant to be exact billing.
@@ -89,6 +90,7 @@ def run_campaign(
                     fault_fired=_any_fault_fired(transport),
                 )
             )
+            episode_results_total.labels(result="pass").inc()
         except Exception as exc:
             elapsed = time.monotonic() - start
             results.append(
@@ -104,6 +106,7 @@ def run_campaign(
                     fault_fired=_any_fault_fired(transport),
                 )
             )
+            episode_results_total.labels(result="fail").inc()
         finally:
             client.close()
 

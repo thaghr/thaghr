@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thaghr-proxy
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: thaghr-proxy}
+  template:
+    metadata:
+      labels: {app: thaghr-proxy}
+    spec:
+      containers:
+        - name: thaghr-proxy
+          image: ghcr.io/thaghr/thaghr:sha-b2e5e89
+          command: ["thaghr", "proxy", "--metrics-port", "9090"]
+          ports:
+            - {containerPort: 9090, name: metrics}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thaghr-proxy
+  namespace: monitoring
+  labels: {app: thaghr-proxy}
+spec:
+  selector: {app: thaghr-proxy}
+  ports:
+    - {port: 9090, name: metrics}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: thaghr-proxy
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels: {app: thaghr-proxy}
+  endpoints:
+    - port: metrics
+      interval: 15s

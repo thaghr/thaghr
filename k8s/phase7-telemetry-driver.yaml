@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: thaghr-openai-key
+  namespace: monitoring
+type: Opaque
+stringData:
+  OPENAI_API_KEY: "REPLACE_ME"   # kubectl edit secret, or use --from-literal at create time, don't commit this file with a real key
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thaghr-telemetry-driver
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: thaghr-telemetry-driver}
+  template:
+    metadata:
+      labels: {app: thaghr-telemetry-driver}
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: thaghr-telemetry-driver
+          image: ghcr.io/thaghr/thaghr:sha-b2e5e89
+          command: ["python3", "-m", "thaghr.telemetry_driver"]
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: thaghr-openai-key
+                  key: OPENAI_API_KEY
+            - name: THAGHR_METRICS_PORT
+              value: "9090"
+            - name: THAGHR_FAULT_RATE
+              value: "0.2"   # bump to ~0.9 temporarily to deliberately blow the error budget for the DoD proof
+            - name: THAGHR_EXAMPLE
+              value: "examples/01-hello-agent"
+            - name: THAGHR_TRIALS_PER_BATCH
+              value: "3"
+            - name: THAGHR_LOOP_SLEEP
+              value: "15"
+            - name: THAGHR_MAX_COST
+              value: "0.50"   # hard ceiling per batch, campaign raises CostBudgetExceeded past this, driver catches it and keeps looping
+          ports:
+            - {containerPort: 9090, name: metrics}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thaghr-telemetry-driver
+  namespace: monitoring
+  labels: {app: thaghr-telemetry-driver}
+spec:
+  selector: {app: thaghr-telemetry-driver}
+  ports:
+    - {port: 9090, name: metrics}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: thaghr-telemetry-driver
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels: {app: thaghr-telemetry-driver}
+  endpoints:
+    - port: metrics
+      interval: 15s
