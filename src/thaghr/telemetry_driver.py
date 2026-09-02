@@ -8,15 +8,20 @@ and thaghr_faults_injected_total are live series a ServiceMonitor can actually s
 0.2 to something like 0.95 without rebuilding the image, that's how the
 ThaghrErrorBudgetBlown alert gets deliberately triggered for the Phase 7 DoD.
 
-THAGHR_SIMULATE_REPEAT_LOOP (default "true"): on startup, before the main
-loop begins, deliberately trigger repeat_loop_detected_total by running a
-stub ThaghrTransport that returns an identical tool_call three times, the
-exact pattern from tests/test_repeat_loop.py, just run in-process here so
-the SAME Prometheus registry Grafana/Alertmanager scrape actually sees it.
-No real agent naturally does this against a working example, so this is a
-deliberate proof, not fabricated traffic disguised as real. Set to "false"
-once the repeat-loop alert has been confirmed firing, no need to keep
-re-triggering it every restart.
+THAGHR_SIMULATE_REPEAT_LOOP (default "true"): every loop iteration, deliberately
+trigger repeat_loop_detected_total by running a stub ThaghrTransport that
+returns an identical tool_call three times, the exact pattern from
+tests/test_repeat_loop.py, run in-process here so the SAME Prometheus
+registry Grafana/Alertmanager scrape actually sees it. Runs on every
+iteration, not once at startup: a single one-time jump at process boot can
+land before Prometheus's first scrape, meaning increase() never observes
+a rise, since Prometheus only sees the metric already sitting at its new
+value with no 0 baseline captured. Periodic retriggering guarantees
+increase() sees real deltas within any evaluation window regardless of
+scrape timing. No real agent naturally does this against a working
+example, so this is a deliberate proof, not fabricated traffic disguised
+as real. Set to "false" once the repeat-loop alert has been confirmed
+firing, no need to keep re-triggering it indefinitely.
 """
 from __future__ import annotations
 
@@ -82,13 +87,12 @@ def main() -> int:
     print(f"thaghr telemetry driver: metrics on :{metrics_port}, "
           f"fault_rate={fault_rate}, example={example_dir}", file=sys.stderr)
 
-    if simulate_repeat_loop:
-        _simulate_repeat_loop()
-
     agent_fn = _load_agent(example_dir)
     seed = 0
 
     while True:
+        if simulate_repeat_loop:
+            _simulate_repeat_loop()
         faults = [HTTPErrorFault(rate=fault_rate, seed=seed)] if fault_rate > 0 else []
         try:
             run_campaign(

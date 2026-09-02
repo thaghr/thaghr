@@ -24,7 +24,7 @@ spec:
         - name: ghcr-pull-secret
       containers:
         - name: thaghr-telemetry-driver
-          image: ghcr.io/thaghr/thaghr:sha-9218732
+          image: ghcr.io/thaghr/thaghr:sha-6d7567f
           command: ["python3", "-m", "thaghr.telemetry_driver"]
           env:
             - name: OPENAI_API_KEY
