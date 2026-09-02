@@ -1,39 +1,18 @@
 from __future__ import annotations
 
+from collections import deque
 from typing import Literal
 
 import httpx
 
 from thaghr.cassette import Cassette
 from thaghr.faults.base import Fault
+from thaghr.telemetry import repeat_loop_detected_total
 
 Mode = Literal["live", "record", "replay"]
 
 
 class ThaghrTransport(httpx.BaseTransport):
-    """An httpx transport that runs a stack of faults against every request.
-
-    Point any SDK's httpx client at a ThaghrTransport (via `http_client=`
-    on the OpenAI client, or the equivalent for any other httpx-based SDK)
-    and every call it makes gets the same fault stack. No SDK-specific
-    adapter is required; this is the provider-level interception locked
-    in during naming/claiming.
-
-    The first fault in `faults` whose `apply()` returns a non-None result
-    short-circuits the request: `wrapped` is never called and no real
-    network traffic occurs. If no fault fires, the request is handled
-    according to `mode`:
-
-      - "live" (default): forwarded to `wrapped` unchanged, nothing recorded.
-      - "record": forwarded to `wrapped`, and the request/response pair is
-        saved to `cassette`.
-      - "replay": never touches `wrapped`; the response comes from
-        `cassette` instead. This is what makes a mixed real+fault campaign
-        byte-identical across re-runs under the same seed: faults replay
-        deterministically via each Fault's own RNG, and the non-faulted
-        calls replay deterministically via the cassette.
-    """
-
     def __init__(
         self,
         faults: list[Fault],
@@ -48,6 +27,7 @@ class ThaghrTransport(httpx.BaseTransport):
         self.cassette = cassette
         self.mode = mode
         self.request_log: list[dict] = []
+        self._tool_call_window: deque[tuple[str, str]] = deque(maxlen=6)
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         for fault in self.faults:
@@ -75,17 +55,44 @@ class ThaghrTransport(httpx.BaseTransport):
             if self.mode == "record":
                 self.cassette.record(request, response)
 
+        self._track_tool_calls(response)
+
         self.request_log.append(
             {"method": request.method, "url": str(request.url), "injected_status": None}
         )
         return response
 
+    def _track_tool_calls(self, response: httpx.Response) -> None:
+        """Feed any tool_calls in this response into a 6-step sliding
+        window. The moment a (tool, args) pair hits its 3rd occurrence
+        in that window, increment repeat_loop_detected_total once for
+        that occurrence, not on every subsequent match, so a stuck
+        agent doesn't runaway-increment the counter every step after
+        crossing the threshold."""
+        try:
+            body = response.json()
+        except Exception:
+            return
+
+        try:
+            tool_calls = body["choices"][0]["message"].get("tool_calls") or []
+        except (KeyError, IndexError, TypeError):
+            return
+
+        for call in tool_calls:
+            fn = call.get("function", {})
+            key = (fn.get("name", ""), fn.get("arguments", ""))
+            self._tool_call_window.append(key)
+            if list(self._tool_call_window).count(key) == 3:
+                repeat_loop_detected_total.labels(tool=key[0]).inc()
+
     def reset(self) -> None:
-        """Reset every fault's RNG, clear the request log, and rewind the
-        cassette (if any) to its start, for re-running a campaign from
-        the beginning."""
+        """Reset every fault's RNG, clear the request log, rewind the
+        cassette (if any), and clear the tool-call window, for
+        re-running a campaign from the beginning."""
         for fault in self.faults:
             fault.reset()
         self.request_log = []
+        self._tool_call_window.clear()
         if self.cassette is not None:
             self.cassette.reset_replay_position()

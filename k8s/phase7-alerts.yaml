@@ -1,0 +1,28 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: thaghr-phase7-alerts
+  namespace: monitoring
+  labels: {release: kube-prometheus-stack}
+spec:
+  groups:
+    - name: thaghr-error-budget
+      rules:
+        - alert: ThaghrErrorBudgetBlown
+          expr: |
+            sum(rate(thaghr_episode_results_total{result="fail"}[5m]))
+            /
+            sum(rate(thaghr_episode_results_total[5m]))
+            > 0.10
+          for: 2m
+          labels: {severity: critical}
+          annotations:
+            summary: "thaghr pass^k failure rate over 10% for 2m"
+    - name: thaghr-repeat-loop
+      rules:
+        - alert: ThaghrRepeatLoopDetected
+          expr: increase(thaghr_repeat_loop_detected_total[5m]) > 0
+          for: 0m
+          labels: {severity: warning}
+          annotations:
+            summary: "Agent repeated the same tool call 3+ times within 6 steps"
